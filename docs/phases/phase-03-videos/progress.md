@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 2/10 completed
+**SIs:** 3/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -21,9 +21,11 @@
   - Updated `cleanAllTables` in `create-test-data-source.ts` to also truncate `videos` (before `channels`, respecting the FK).
 
 ### SI-03.3 — Storage Module (S3/MinIO Client Wrapper)
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 5 passing (storage.service.integration-spec.ts) — real MinIO, no mocks
+- **Observations:**
+  - Verified the 206 Partial Content / Range claim directly: a real `fetch` with `Range: bytes=0-2` against a presigned GET URL returns 206 with the exact byte slice — no custom code needed, confirming TD-06's premise before building on it in SI-03.9.
+  - `StorageModule` is `@Global()` so `VideosModule`, the upload endpoints, and the worker (SI-03.7/08) can all inject `StorageService` without each importing `StorageModule` explicitly.
 
 ### SI-03.4 — Queue Module (BullMQ Producer)
 - **Status:** pending
