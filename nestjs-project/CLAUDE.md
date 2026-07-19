@@ -33,7 +33,10 @@ docker compose exec nestjs-api npm run start:dev
 
 Services:
 - `nestjs-api` — NestJS API, port `3000`
+- `video-worker` — background video processing worker (BullMQ consumer), no exposed port. Built from `Dockerfile.worker.dev` (a separate image from `nestjs-api`'s `Dockerfile.dev`) — it's the only image with `ffmpeg`/`ffprobe` installed. See § Videos Module below.
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `redis` — Redis 7, port `6379` — BullMQ's backing store
+- `minio` — MinIO (S3-compatible object storage), API port `9000`, console port `9001`, bucket `streamtube-videos`
 
 All verification and teardown commands run on the **host machine**:
 
@@ -66,11 +69,37 @@ npm run start:prod                       # Run compiled build
 npm test                                 # Unit tests
 npm run test:watch                       # Unit tests in watch mode
 npm run test:cov                         # Coverage report
-npm run test:e2e                         # End-to-end tests (always with --runInBand)
+npm run test:e2e                         # End-to-end tests (already runs --runInBand)
 
 npx tsc --noEmit                         # Type-check (required before declaring a task done)
 npm run lint                             # ESLint with auto-fix
 npm run format                           # Prettier formatting
+
+npm run start:worker                     # Worker entry point (run inside video-worker instead — see below)
+npm run start:worker:dev                 # Worker with hot-reload (video-worker's default command)
+```
+
+### Which container to run tests in — `nestjs-api` vs `video-worker`
+
+`nestjs-api`'s image (`Dockerfile.dev`) does **not** have `ffmpeg`/`ffprobe` installed — only `video-worker`'s image (`Dockerfile.worker.dev`) does (TD-05: keep the API image lean, since only the worker needs FFmpeg). Both images otherwise share the same codebase via the same bind mount, so:
+
+- Any test that does **not** touch `src/videos/worker/**` (i.e. anything that doesn't import `mediaforge` or boot `WorkerModule`) can run from either container — `nestjs-api` is the default.
+- Tests under `src/videos/worker/` (`worker.module.spec.ts`, `video.processor.integration-spec.ts`) and `test/videos-full-flow.e2e-spec.ts` (which boots the real `WorkerModule` alongside the API) **require** `ffmpeg` — run these from `video-worker`, not `nestjs-api`.
+- The full suite (`npm test`, `npm run test:e2e`) must therefore run from `video-worker` to cover everything — `nestjs-api` alone will fail the worker-specific files.
+
+Because the long-running `video-worker` service is itself a live BullMQ consumer, running the test suite via `docker compose exec video-worker ...` while the service is also up creates **two competing consumers on the same Redis queue**, and jobs can silently go to the wrong one. Stop the service first, then use a throwaway container from the same image for testing:
+
+```bash
+docker compose stop video-worker
+docker compose run -d --rm --name video-worker-test --entrypoint sh video-worker -c "sleep infinity"
+
+docker exec video-worker-test npm test -- --runInBand
+docker exec video-worker-test npm run test:e2e
+docker exec video-worker-test npx tsc --noEmit
+docker exec video-worker-test npm run lint
+
+docker stop video-worker-test
+docker compose up -d video-worker   # restart the real service afterward
 ```
 
 ### Host-only commands (Docker / connectivity probes)
@@ -148,6 +177,47 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 
 - Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`
 - Controllers handle HTTP routing; Services hold business logic; both are scoped to their module
+
+## Videos Module
+
+Upload, background processing, and streaming/download for videos (Phase 03). Decisions are recorded in `docs/decisions/technical-decisions-phase-03-videos.md`; the plan is `docs/phases/phase-03-videos/phase-03-videos.md`.
+
+### Entity (`src/videos/entities/video.entity.ts`)
+
+`Video`, table `videos`, owned many-to-one by `Channel` (`channel_id`). Status lifecycle: `draft → processing → ready | failed` (`VideoStatus` enum). Key columns: `storage_key`/`thumbnail_key` (object storage keys, unique on `storage_key`), `upload_id` (active S3/MinIO multipart upload, cleared on complete/abort), `size_bytes` (`bigint`, mapped to a `string` in TS), `duration_seconds`/`width`/`height`/`codec`/`bitrate` (populated by the worker), `error_message` (populated only when `status: failed`). Migration: `src/database/migrations/1784491179100-CreateVideos.ts`.
+
+### Endpoints (`src/videos/videos.controller.ts`, all authenticated — no `@Public()`)
+
+| Method & path | Purpose |
+|---|---|
+| `POST /videos` | Pre-registers a draft video for the caller's channel |
+| `POST /videos/:id/upload-session` | Initiates a real S3/MinIO multipart upload (≤10GB, enforced in the service — not a DTO validator, since it must surface as `413 FILE_TOO_LARGE`, not a generic `400`) |
+| `POST /videos/:id/upload-session/parts/:partNumber` | Presigns a `PUT` URL for one multipart upload part |
+| `POST /videos/:id/upload-session/complete` | Finalizes the multipart upload, flips the video to `processing`, enqueues the background job |
+| `POST /videos/:id/upload-session/abort` | Aborts the active session, resets the video back to a retryable `draft` |
+| `GET /videos/:id` | Video detail: status + extracted metadata |
+| `GET /videos/:id/playback-url` | Presigned `GET` URL (only when `status: ready`) — the same URL serves both streaming (`Range` → native `206 Partial Content`, no custom code) and full download |
+
+Ownership is enforced as `404 VIDEO_NOT_FOUND` (never a distinguishable `403`) for videos belonging to another user's channel, matching the non-leaking precedent already used for `INVALID_CREDENTIALS` in the auth module. `ChannelsService.findByUserId(userId)` resolves the caller's channel — the JWT payload only carries `{ sub, email }`, no `channelId`.
+
+### Storage (`src/storage/`) — global module
+
+`StorageService` wraps `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` against MinIO locally (`STORAGE_ENDPOINT`, `STORAGE_FORCE_PATH_STYLE=true`) — swapping to real AWS S3 in production means removing those two env vars only, no code change. Bucket: `STORAGE_BUCKET` (default `streamtube-videos`). Key layout: `videos/{videoId}/original.{ext}` and `videos/{videoId}/thumbnail.png`. `StorageModule` is `@Global()` so any module can inject `StorageService` without importing it explicitly.
+
+### Queue (`src/queue/`)
+
+`QueueModule` registers the `video-processing` BullMQ queue against Redis (`REDIS_HOST`/`REDIS_PORT`). `VideoQueueService.enqueueProcessing(videoId)` adds a `process-video` job with `attempts: 3`, exponential `backoff` (5s base), `removeOnComplete: true`, `removeOnFail: false` (failed jobs are kept for inspection; the terminal signal is the DB row, not the queue). The queue name constant lives in its own `queue.constants.ts` file — do not move it into `queue.module.ts`, that reintroduces a circular import with `video-queue.service.ts`.
+
+### Worker (`src/videos/worker/`) — separate process/container
+
+`WorkerModule` + `main-worker.ts` boot a second NestJS application (`NestFactory.createApplicationContext`, no HTTP listener) — the `video-worker` Compose service, built from its own `Dockerfile.worker.dev` (the only image with `ffmpeg`/`ffprobe`; `nestjs-api`'s image is untouched). `VideoProcessor` (`@Processor('video-processing')`, extends `WorkerHost`) downloads the original from storage to a temp file, probes it via `mediaforge` (`probeAsync`/`getMediaDuration`/`getDefaultVideoStream`/`summarizeVideoStream`), extracts a PNG thumbnail (`frameToBuffer` — only `png`/`mjpeg`/`bmp` are supported, not `jpeg`; the timestamp is clamped strictly inside `[0, duration)` since seeking to exactly `duration` silently returns an empty buffer), uploads the thumbnail, and updates the row to `ready` with the extracted metadata. On the **final** failed attempt (`@OnWorkerEvent('failed')`, `job.attemptsMade >= attempts`), the row flips to `failed` with `error_message`; intermediate retry failures leave the row untouched so BullMQ's own backoff can recover silently.
+
+### Testing notes specific to this module
+
+- `src/videos/worker/fixtures/` holds a real ~17KB 1-second H.264 fixture (`sample.mp4`, generated via `ffmpeg -f lavfi testsrc`) and a corrupt file (`corrupt.mp4`) for the failure-path test — regenerate `sample.mp4` with `ffmpeg -f lavfi -i "testsrc=duration=1:size=320x240:rate=10" -f lavfi -i "sine=frequency=1000:duration=1" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest -y sample.mp4` if it ever needs to change.
+- Worker/queue integration tests that observe a **completed** job must listen for the BullMQ worker's own `'completed'` event (`removeOnComplete: true` deletes the job from Redis the instant it succeeds, so polling `queue.getJobs()`/`job.getState()` afterward finds nothing). Tests observing a **failed** job can poll the DB row instead (`removeOnFail: false` keeps the job, and the DB update is the more reliable signal since `@OnWorkerEvent` handlers aren't awaited by BullMQ's own event emission).
+- `Test.createTestingModule({...}).compile()` alone does **not** run `onModuleInit`/`onApplicationBootstrap` — `@nestjs/bullmq`'s `WorkerHost` only starts its internal `Worker` in `onModuleInit`. Call `await module.init()` explicitly when testing a `WorkerModule` in isolation.
+- See § "Which container to run tests in" above — worker/mediaforge tests need the `video-worker` image.
 
 ## Code Conventions
 
