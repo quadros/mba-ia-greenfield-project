@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 6/10 completed
+**SIs:** 7/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -52,9 +52,14 @@
   - Integration test proves the full real chain end-to-end: real MinIO multipart completion, real DB status flip, real BullMQ job enqueued, and the assembled object retrievable byte-for-byte from storage — all in one test, no mocks.
 
 ### SI-03.7 — Video Worker Bootstrap
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 2 passing (worker.module.spec.ts: compilation, video.processor.integration-spec.ts: real Redis job pickup)
+- **Observations:**
+  - `Video`'s relation graph requires `Channel` AND `User` both registered via `TypeOrmModule.forFeature` in `WorkerModule` (not just `Video`) — TypeORM builds full entity metadata eagerly at `DataSource.initialize()`, including inverse relations, regardless of whether the worker's code ever traverses them.
+  - Real debugging finding: `Test.createTestingModule({...}).compile()` alone does **not** run `onModuleInit`/`onApplicationBootstrap` lifecycle hooks — `@nestjs/bullmq`'s `WorkerHost` only starts its internal BullMQ `Worker` in `onModuleInit` (via an internal `BullRegistrar`), so tests booting a module in isolation (not via `app.init()`/`createNestApplication()`) must call `await module.init()` explicitly or the worker never starts.
+  - `jest.spyOn(processor, 'process')` cannot observe job execution: `@nestjs/bullmq`'s explorer does `instance.process.bind(instance)` once at Worker-registration time, capturing the original method — a later `spyOn` reassignment on the instance is invisible to that captured reference. Verified via a raw BullMQ script that the job really was completing while the spy-based test still timed out.
+  - `removeOnComplete: true` (TD-07) deletes the job from Redis the instant it completes — polling `queue.getJobs()`/`job.getState()` afterward finds nothing even on success. The correct test observes completion via the worker's own `'completed'` event, not by re-querying job state.
+  - Verified the real `video-worker` Compose service end-to-end (not just in Jest): built, started, connected to the real `db`/`redis`/`minio` services, and picked up a job left over from testing — confirmed via `docker compose logs video-worker`.
 
 ### SI-03.8 — Metadata Extraction, Thumbnail Generation, and Status Lifecycle
 - **Status:** pending
