@@ -199,31 +199,45 @@ const playbackUrl = await getSignedUrl(
 
 ### 1. Probe metadata (duration, resolution, codec) — TD-05 / TD-07
 
+**Corrected against the installed `v0.3.0` package** (verified via `node_modules/mediaforge/dist/esm/probe/ffprobe.d.ts`) — the functions below are real and match the shape assumed originally:
+
 ```typescript
 import { probeAsync, getMediaDuration, getDefaultVideoStream, summarizeVideoStream } from 'mediaforge';
 
-const info = await probeAsync(localFilePath); // or a readable stream, per the library's supported inputs
-const durationSeconds = getMediaDuration(info);
-const videoStream = getDefaultVideoStream(info);
-const { codec, width, height, fps, bitrate } = summarizeVideoStream(videoStream);
+const info = await probeAsync(localFilePath); // local file path only — no stream input support
+const durationSeconds = getMediaDuration(info); // number | null, in seconds
+const videoStream = getDefaultVideoStream(info); // ProbeStream | null
+const summary = videoStream ? summarizeVideoStream(videoStream) : null;
+// summary: { index, codec, width, height, fps, pixFmt, durationSec, bitrateBps, profile?, colorSpace? }
 ```
 
 ### 2. Generate a thumbnail from a frame (TD-05)
 
+**Corrected against the installed package** — `frameToBuffer` takes a single options object (not `(path, options)`), and `format` only accepts `'png' | 'mjpeg' | 'bmp'` — **`'jpeg'` is not supported**:
+
 ```typescript
 import { frameToBuffer } from 'mediaforge';
 
-const thumbnailBuffer = await frameToBuffer(localFilePath, {
-  timestamp: '00:00:01', // or a computed early-timestamp default per TD-05's implementation note
-  format: 'jpeg',
-  size: '640x360',
+const thumbnailBuffer = await frameToBuffer({
+  input: localFilePath,
+  timestamp, // number (seconds) or string ('00:00:01') — see the clamping note below
+  format: 'png',
+  size: '640x360', // optional
 });
 // thumbnailBuffer is returned in-memory (no temp file on disk) — upload directly via PutObjectCommand
-// to `videos/{videoId}/thumbnail.jpg` using the TD-02 storage client.
+// to `videos/{videoId}/thumbnail.png` using the TD-02 storage client.
+```
+
+**Timestamp clamping — real bug found during SI-03.8 implementation:** seeking to a timestamp `== duration` (e.g. `timestamp: 1` on a video that is exactly 1 second long) returns an **empty `Buffer` with no thrown error** — ffmpeg silently produces nothing once the seek lands past the last valid frame. Always clamp strictly inside `[0, duration)`:
+
+```typescript
+const timestamp = durationSeconds !== null
+  ? Math.max(0, Math.min(DESIRED_TIMESTAMP, durationSeconds - 0.1))
+  : 0;
 ```
 
 ### 3. Binary path configuration (apt-installed, per TD-05 Option A)
 
-No explicit configuration call needed when `ffmpeg`/`ffprobe` are on `PATH` (the default after `apt-get install ffmpeg` in the worker's Dockerfile). Only set `FFMPEG_PATH`/`FFPROBE_PATH` env vars if a non-standard binary location is ever needed.
+No explicit configuration call needed when `ffmpeg`/`ffprobe` are on `PATH` (the default after `apt-get install ffmpeg` in the worker's Dockerfile). Only set `FFMPEG_PATH`/`FFPROBE_PATH` env vars if a non-standard binary location is ever needed. Verified working in the actual `video-worker` image (ffmpeg 5.1.9, Debian bookworm).
 
 **Known risk (accepted in TD-05's Revision):** `mediaforge` is pre-1.0 (`v0.3.0`) — its API surface may still change before a 1.0 release. Pin the exact version in `package-lock.json` and re-verify this file's code samples against the installed version before upgrading.

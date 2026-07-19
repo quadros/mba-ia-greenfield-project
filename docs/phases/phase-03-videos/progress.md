@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 7/10 completed
+**SIs:** 8/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -62,9 +62,14 @@
   - Verified the real `video-worker` Compose service end-to-end (not just in Jest): built, started, connected to the real `db`/`redis`/`minio` services, and picked up a job left over from testing — confirmed via `docker compose logs video-worker`.
 
 ### SI-03.8 — Metadata Extraction, Thumbnail Generation, and Status Lifecycle
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 2 passing (video.processor.integration-spec.ts) — real FFmpeg, real MinIO, a committed ~17KB 1s H.264 fixture (`fixtures/sample.mp4`, generated via `ffmpeg -f lavfi testsrc`) plus a corrupt-file fixture (`fixtures/corrupt.mp4`) for the failure path
+- **Observations:**
+  - `mediaforge`'s actual exports differ from what `library-refs.md` assumed: `frameToBuffer` takes a single options object `{ input, timestamp, format, size }` (not positional args), and `format` only accepts `'png' | 'mjpeg' | 'bmp'` — no `'jpeg'`. Switched the thumbnail to PNG (`thumbnail.png`, not `.jpg`) and updated `library-refs.md` accordingly. `getMediaDuration`/`getDefaultVideoStream`/`summarizeVideoStream` do exist as documented, re-exported from `mediaforge`'s top-level `index.d.ts`.
+  - Real bug caught by the fixture test: seeking a frame at exactly `timestamp = duration` (e.g. `t=1` on a 1-second video) returns an **empty buffer with no thrown error** — ffmpeg silently produces nothing past the last valid frame. Fixed by clamping the thumbnail timestamp strictly inside `[0, duration)` (`min(1, duration - 0.1)`, floored at 0) instead of a naive `duration < 1 ? 0 : 1` check.
+  - `removeOnComplete: true` means a job vanishes from Redis the instant it succeeds — the success-path test observes completion via the worker's `'completed'` event; the failure-path test (which sets `removeOnFail: false`) can safely poll `videoRepository` for `status: 'failed'` instead, since `@OnWorkerEvent('failed')`'s async DB update isn't awaited by BullMQ's own event emission.
+  - Root-caused a confusing intermittent timeout: multiple **leftover `jest` processes from earlier debugging sessions** (never cleanly terminated) were still connected to the real Redis queue as competing consumers, silently stealing jobs from the test's own worker instance before it could observe its `'completed'` event. Diagnosed by comparing "direct `processor.process()` call → instant success" against "same job through the real queue → timeout with no error," which only made sense once multiple live consumers were confirmed via `ps aux` across containers. Not a product bug — an artifact of a long debugging session; resolved by killing the zombies and obliterating the queue before re-testing. Tests themselves need no special handling for this (a fresh environment doesn't have zombie processes).
+  - FFmpeg/ffprobe binaries verified present and working inside the rebuilt `video-worker` image (`Dockerfile.worker.dev`); the real Compose service was built, started, and confirmed processing jobs end-to-end via `docker compose logs`.
 
 ### SI-03.9 — Video Detail and Playback URL Endpoints
 - **Status:** pending
