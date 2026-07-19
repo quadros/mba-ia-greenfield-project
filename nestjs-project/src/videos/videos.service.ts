@@ -3,12 +3,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { StorageService } from '../storage/storage.service';
+import { VideoQueueService } from '../queue/video-queue.service';
 import {
   FileTooLargeException,
   InvalidUploadStateException,
   UploadSessionNotFoundException,
   VideoNotFoundException,
 } from '../common/exceptions/domain.exception';
+import { CompleteUploadSessionDto } from './dto/upload-part.dto';
 import { CreateUploadSessionDto } from './dto/create-upload-session.dto';
 import { CreateVideoDto } from './dto/create-video.dto';
 import { Video, VideoStatus } from './entities/video.entity';
@@ -24,6 +26,7 @@ export class VideosService {
     private readonly videoRepository: Repository<Video>,
     private readonly channelsService: ChannelsService,
     private readonly storageService: StorageService,
+    private readonly videoQueueService: VideoQueueService,
   ) {}
 
   private async resolveChannelId(userId: string): Promise<string> {
@@ -105,6 +108,35 @@ export class VideosService {
       video.upload_id,
       partNumber,
     );
+  }
+
+  async completeUploadSession(
+    videoId: string,
+    userId: string,
+    dto: CompleteUploadSessionDto,
+  ): Promise<Video> {
+    const video = await this.findOwnedOrThrow(videoId, userId);
+    if (!video.upload_id || !video.storage_key) {
+      throw new UploadSessionNotFoundException();
+    }
+    if (video.status !== VideoStatus.DRAFT) {
+      throw new InvalidUploadStateException(
+        'Upload session is not awaiting completion',
+      );
+    }
+
+    await this.storageService.completeMultipartUpload(
+      video.storage_key,
+      video.upload_id,
+      dto.parts.map(({ partNumber, eTag }) => ({ partNumber, eTag })),
+    );
+
+    video.status = VideoStatus.PROCESSING;
+    const saved = await this.videoRepository.save(video);
+
+    await this.videoQueueService.enqueueProcessing(video.id);
+
+    return saved;
   }
 
   async abortUploadSession(videoId: string, userId: string): Promise<void> {

@@ -1,11 +1,14 @@
 import { Test } from '@nestjs/testing';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { getQueueToken } from '@nestjs/bullmq';
 import { DataSource, Repository } from 'typeorm';
+import type { Queue } from 'bullmq';
 import type { TestingModule } from '@nestjs/testing';
 import type { ConfigType } from '@nestjs/config';
 import databaseConfig from '../config/database.config';
 import storageConfig from '../config/storage.config';
+import queueConfig from '../config/queue.config';
 import { ChannelsService } from '../channels/channels.service';
 import { User } from '../users/entities/user.entity';
 import {
@@ -16,6 +19,9 @@ import {
 } from '../common/exceptions/domain.exception';
 import { cleanAllTables } from '../test/create-test-data-source';
 import { StorageModule } from '../storage/storage.module';
+import { StorageService } from '../storage/storage.service';
+import { VIDEO_PROCESSING_QUEUE } from '../queue/queue.constants';
+import type { ProcessVideoJobData } from '../queue/video-queue.service';
 import { Video, VideoStatus } from './entities/video.entity';
 import { VideosModule } from './videos.module';
 import { VideosService } from './videos.service';
@@ -24,15 +30,17 @@ describe('VideosService (integration)', () => {
   let module: TestingModule;
   let videosService: VideosService;
   let channelsService: ChannelsService;
+  let storageService: StorageService;
   let userRepository: Repository<User>;
   let dataSource: DataSource;
+  let queue: Queue<ProcessVideoJobData>;
 
   beforeAll(async () => {
     module = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
           isGlobal: true,
-          load: [databaseConfig, storageConfig],
+          load: [databaseConfig, storageConfig, queueConfig],
         }),
         TypeOrmModule.forRootAsync({
           inject: [databaseConfig.KEY],
@@ -55,8 +63,10 @@ describe('VideosService (integration)', () => {
 
     videosService = module.get(VideosService);
     channelsService = module.get(ChannelsService);
+    storageService = module.get(StorageService);
     dataSource = module.get(DataSource);
     userRepository = dataSource.getRepository(User);
+    queue = module.get(getQueueToken(VIDEO_PROCESSING_QUEUE));
   });
 
   afterAll(async () => {
@@ -65,6 +75,7 @@ describe('VideosService (integration)', () => {
 
   beforeEach(async () => {
     await cleanAllTables(dataSource);
+    await queue.obliterate({ force: true });
   });
 
   let counter = 0;
@@ -167,5 +178,55 @@ describe('VideosService (integration)', () => {
         contentType: 'video/mp4',
       }),
     ).rejects.toThrow(FileTooLargeException);
+  });
+
+  describe('completeUploadSession', () => {
+    it('completes a real multipart upload, flips status to processing, and enqueues a real job', async () => {
+      const { userId, videoId } = await createOwnedVideo();
+      const content = Buffer.from('a full small multipart upload payload');
+      await videosService.createUploadSession(videoId, userId, {
+        sizeBytes: content.length,
+        contentType: 'video/mp4',
+      });
+
+      const partUrl = await videosService.presignUploadPart(videoId, userId, 1);
+      const putResponse = await fetch(partUrl, {
+        method: 'PUT',
+        body: content,
+      });
+      const eTag = putResponse.headers.get('etag') as string;
+
+      const result = await videosService.completeUploadSession(
+        videoId,
+        userId,
+        { parts: [{ partNumber: 1, eTag }] },
+      );
+
+      expect(result.status).toBe(VideoStatus.PROCESSING);
+
+      const jobs = await queue.getJobs(['waiting', 'delayed', 'active']);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].data).toEqual({ videoId });
+
+      const stored = await dataSource
+        .getRepository(Video)
+        .findOneByOrFail({ id: videoId });
+      const getUrl = await storageService.presignGetObject(
+        stored.storage_key as string,
+      );
+      const getResponse = await fetch(getUrl);
+      const retrieved = Buffer.from(await getResponse.arrayBuffer());
+      expect(retrieved.equals(content)).toBe(true);
+    });
+
+    it('throws UploadSessionNotFoundException when there is no active session', async () => {
+      const { userId, videoId } = await createOwnedVideo();
+
+      await expect(
+        videosService.completeUploadSession(videoId, userId, {
+          parts: [{ partNumber: 1, eTag: '"deadbeef"' }],
+        }),
+      ).rejects.toThrow(UploadSessionNotFoundException);
+    });
   });
 });

@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 5/10 completed
+**SIs:** 6/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -44,9 +44,12 @@
   - Real regression caught by the new e2e file: `npm run test:e2e` doesn't pass `--runInBand` in the npm script itself (only documented as a manual flag), and with `videos.e2e-spec.ts` now sharing `users`/`channels` tables with `auth.e2e-spec.ts`, the two files' processes raced on `cleanAllTables`, causing a real FK violation. Fixed by baking `--runInBand` into the `test:e2e` script so `npm run test:e2e` is correct standalone, per the project's own documented e2e/integration constraint.
 
 ### SI-03.6 — Upload Completion and Processing Enqueue
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 10 passing (videos.service.integration-spec.ts: +2, videos.e2e-spec.ts: +2, plus the 6 already-existing videos.service.spec.ts unit tests continued passing after adding the VideoQueueService mock)
+- **Observations:**
+  - Plan specified `200` (not the `201` used by the other POST endpoints) for this response — matched via explicit `@HttpCode(HttpStatus.OK)`.
+  - `QueueModule` had to be explicitly imported into `VideosModule` even though both already sit under `AppModule` — NestJS doesn't share providers between sibling modules without an explicit import (unless `@Global()`), and `QueueModule` is deliberately not global.
+  - Integration test proves the full real chain end-to-end: real MinIO multipart completion, real DB status flip, real BullMQ job enqueued, and the assembled object retrievable byte-for-byte from storage — all in one test, no mocks.
 
 ### SI-03.7 — Video Worker Bootstrap
 - **Status:** pending

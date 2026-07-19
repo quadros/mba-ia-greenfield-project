@@ -17,6 +17,7 @@ import {
 import { ApiErrorEnvelope } from '../common/openapi/api-error-envelope.dto';
 import type { JwtPayload } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CompleteUploadSessionDto } from './dto/upload-part.dto';
 import { CreateUploadSessionDto } from './dto/create-upload-session.dto';
 import { CreateVideoDto } from './dto/create-video.dto';
 import { PresignedUrlResponseDto } from './dto/presigned-url-response.dto';
@@ -117,6 +118,38 @@ export class VideosController {
       partNumber,
     );
     return { url, expiresIn: 3600 };
+  }
+
+  @Post(':id/upload-session/complete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Complete a multipart upload session',
+    description:
+      'Finalizes the multipart upload, flips the video to processing, and enqueues background processing.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Upload completed, video is now processing',
+    type: VideoResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video or upload session not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'No active session to complete',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async completeUploadSession(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: CompleteUploadSessionDto,
+  ): Promise<VideoResponseDto> {
+    return toVideoResponse(
+      await this.videosService.completeUploadSession(id, user.sub, dto),
+    );
   }
 
   @Post(':id/upload-session/abort')

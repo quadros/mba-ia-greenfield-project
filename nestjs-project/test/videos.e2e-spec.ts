@@ -178,6 +178,59 @@ describe('Videos (e2e)', () => {
     });
   });
 
+  describe('POST /videos/:id/upload-session/complete', () => {
+    it('completes a real upload and returns status: processing', async () => {
+      const token = await registerConfirmAndLogin();
+      const content = Buffer.from('e2e complete upload payload');
+      const createRes = await request(app.getHttpServer())
+        .post('/videos')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ title: 'Complete me' });
+      const videoId = (createRes.body as VideoResponseBody).id;
+      await request(app.getHttpServer())
+        .post(`/videos/${videoId}/upload-session`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sizeBytes: content.length, contentType: 'video/mp4' });
+
+      const partRes = await request(app.getHttpServer())
+        .post(`/videos/${videoId}/upload-session/parts/1`)
+        .set('Authorization', `Bearer ${token}`);
+      const partUrl = (partRes.body as { url: string }).url;
+      const putResponse = await fetch(partUrl, {
+        method: 'PUT',
+        body: content,
+      });
+      const eTag = putResponse.headers.get('etag') as string;
+
+      const res = await request(app.getHttpServer())
+        .post(`/videos/${videoId}/upload-session/complete`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ parts: [{ partNumber: 1, eTag }] })
+        .expect(200);
+
+      expect((res.body as VideoResponseBody).status).toBe('processing');
+    });
+
+    it('returns 404 when there is no active upload session', async () => {
+      const token = await registerConfirmAndLogin();
+      const createRes = await request(app.getHttpServer())
+        .post('/videos')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ title: 'No session' });
+      const videoId = (createRes.body as VideoResponseBody).id;
+
+      const res = await request(app.getHttpServer())
+        .post(`/videos/${videoId}/upload-session/complete`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ parts: [{ partNumber: 1, eTag: '"x"' }] })
+        .expect(404);
+
+      expect((res.body as ErrorResponseBody).error).toBe(
+        'UPLOAD_SESSION_NOT_FOUND',
+      );
+    });
+  });
+
   describe('POST /videos/:id/upload-session/abort', () => {
     it('returns 204 and allows a fresh session afterwards', async () => {
       const token = await registerConfirmAndLogin();

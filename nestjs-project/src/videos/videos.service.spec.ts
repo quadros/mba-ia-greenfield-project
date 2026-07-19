@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { Channel } from '../channels/entities/channel.entity';
 import { StorageService } from '../storage/storage.service';
+import { VideoQueueService } from '../queue/video-queue.service';
 import {
   FileTooLargeException,
   InvalidUploadStateException,
@@ -52,7 +53,12 @@ describe('VideosService', () => {
             createMultipartUpload: jest.fn(),
             presignUploadPart: jest.fn(),
             abortMultipartUpload: jest.fn(),
+            completeMultipartUpload: jest.fn(),
           },
+        },
+        {
+          provide: VideoQueueService,
+          useValue: { enqueueProcessing: jest.fn() },
         },
       ],
     }).compile();
