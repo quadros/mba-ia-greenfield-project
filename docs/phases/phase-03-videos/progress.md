@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 4/10 completed
+**SIs:** 5/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -35,9 +35,13 @@
   - Added `module.close()` in the test's `afterAll` (was missing) — without it, BullMQ's Redis connections linger past the test run and Jest warns about open handles.
 
 ### SI-03.5 — Video Draft Creation and Upload Session Endpoints
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 23 passing (videos.service.spec.ts: 10 unit, videos.service.integration-spec.ts: 6 integration real DB+MinIO, videos.e2e-spec.ts: 7 e2e)
+- **Observations:**
+  - Added `ChannelsService.findByUserId(userId)` — no such lookup existed; needed to resolve the caller's `channelId` from the JWT payload (`{ sub, email }` only, no `channelId`).
+  - Non-owned video access returns 404 (not 403) uniformly, matching `INVALID_CREDENTIALS`'s existing non-leaking precedent from Phase 02 — the video's existence is never revealed to a non-owner.
+  - `sizeBytes` upper-bound (10GB) is enforced in the service, not via a DTO `@Max` decorator — a DTO-level max would trigger the generic 400 `VALIDATION_ERROR` instead of the plan's distinct 413 `FILE_TOO_LARGE`.
+  - Real regression caught by the new e2e file: `npm run test:e2e` doesn't pass `--runInBand` in the npm script itself (only documented as a manual flag), and with `videos.e2e-spec.ts` now sharing `users`/`channels` tables with `auth.e2e-spec.ts`, the two files' processes raced on `cleanAllTables`, causing a real FK violation. Fixed by baking `--runInBand` into the `test:e2e` script so `npm run test:e2e` is correct standalone, per the project's own documented e2e/integration constraint.
 
 ### SI-03.6 — Upload Completion and Processing Enqueue
 - **Status:** pending

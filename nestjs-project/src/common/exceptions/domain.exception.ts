@@ -48,3 +48,31 @@ export class TokenReuseDetectedException extends DomainException {
     );
   }
 }
+
+export class VideoNotFoundException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_FOUND', 404, 'Video not found');
+  }
+}
+
+export class InvalidUploadStateException extends DomainException {
+  constructor(message = 'Invalid upload state for this operation') {
+    super('INVALID_UPLOAD_STATE', 409, message);
+  }
+}
+
+export class FileTooLargeException extends DomainException {
+  constructor() {
+    super('FILE_TOO_LARGE', 413, 'File exceeds the 10GB upload limit');
+  }
+}
+
+export class UploadSessionNotFoundException extends DomainException {
+  constructor() {
+    super(
+      'UPLOAD_SESSION_NOT_FOUND',
+      404,
+      'No active upload session for this video',
+    );
+  }
+}
