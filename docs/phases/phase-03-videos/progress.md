@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 3/10 completed
+**SIs:** 4/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -28,9 +28,11 @@
   - `StorageModule` is `@Global()` so `VideosModule`, the upload endpoints, and the worker (SI-03.7/08) can all inject `StorageService` without each importing `StorageModule` explicitly.
 
 ### SI-03.4 — Queue Module (BullMQ Producer)
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 1 passing (video-queue.service.integration-spec.ts) — real Redis
+- **Observations:**
+  - Hit a real circular-import bug: the queue-name constant was originally declared and exported from `queue.module.ts`, which imports `VideoQueueService`, which imported the constant back from `queue.module.ts`. The circular reference left `@InjectQueue(VIDEO_PROCESSING_QUEUE)` evaluating against `undefined` at class-decoration time, producing a "can't resolve dependency BullQueue_default" error with no compile-time signal. Fixed by extracting the constant into its own `queue.constants.ts` (matches the project's established `<module>.constants.ts` convention).
+  - Added `module.close()` in the test's `afterAll` (was missing) — without it, BullMQ's Redis connections linger past the test run and Jest warns about open handles.
 
 ### SI-03.5 — Video Draft Creation and Upload Session Endpoints
 - **Status:** pending
