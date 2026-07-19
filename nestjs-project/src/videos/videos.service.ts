@@ -139,6 +139,20 @@ export class VideosService {
     return saved;
   }
 
+  async findOwnedById(videoId: string, userId: string): Promise<Video> {
+    return this.findOwnedOrThrow(videoId, userId);
+  }
+
+  async getPlaybackUrl(videoId: string, userId: string): Promise<string> {
+    const video = await this.findOwnedOrThrow(videoId, userId);
+    if (video.status !== VideoStatus.READY) {
+      throw new InvalidUploadStateException(
+        'Video is not ready for playback yet',
+      );
+    }
+    return this.storageService.presignGetObject(video.storage_key as string);
+  }
+
   async abortUploadSession(videoId: string, userId: string): Promise<void> {
     const video = await this.findOwnedOrThrow(videoId, userId);
     if (!video.upload_id || !video.storage_key) {

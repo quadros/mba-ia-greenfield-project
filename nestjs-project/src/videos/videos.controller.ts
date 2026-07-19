@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -150,6 +151,60 @@ export class VideosController {
     return toVideoResponse(
       await this.videosService.completeUploadSession(id, user.sub, dto),
     );
+  }
+
+  @Get(':id')
+  @ApiOperation({
+    summary: 'Get video detail',
+    description:
+      "Returns the caller's video with its current status and metadata.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Video detail',
+    type: VideoResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async findOne(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ): Promise<VideoResponseDto> {
+    return toVideoResponse(
+      await this.videosService.findOwnedById(id, user.sub),
+    );
+  }
+
+  @Get(':id/playback-url')
+  @ApiOperation({
+    summary: 'Get the playback URL',
+    description:
+      'Returns a presigned GET URL for a ready video — supports Range requests (streaming) and full download.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Presigned playback URL',
+    type: PresignedUrlResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not ready yet',
+    schema: { $ref: getSchemaPath(ApiErrorEnvelope) },
+  })
+  async getPlaybackUrl(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ): Promise<PresignedUrlResponseDto> {
+    const url = await this.videosService.getPlaybackUrl(id, user.sub);
+    return { url, expiresIn: 3600 };
   }
 
   @Post(':id/upload-session/abort')

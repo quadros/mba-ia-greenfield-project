@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 8/10 completed
+**SIs:** 9/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -72,9 +72,13 @@
   - FFmpeg/ffprobe binaries verified present and working inside the rebuilt `video-worker` image (`Dockerfile.worker.dev`); the real Compose service was built, started, and confirmed processing jobs end-to-end via `docker compose logs`.
 
 ### SI-03.9 — Video Detail and Playback URL Endpoints
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 17 passing (videos.service.spec.ts: +2 unit, videos.e2e-spec.ts: +4 e2e — real HTTP 206 Range streaming proven through the actual API, not just the storage layer)
+- **Observations:**
+  - `videos.e2e-spec.ts` was missing the throttler-storage-clear `beforeEach` that `auth.e2e-spec.ts` already has (documented gotcha in `.claude/rules/nestjs-testing.md`). With enough `registerConfirmAndLogin()` calls accumulated across the file's growing test count, the per-IP rate limit silently exhausted and later tests got 401s instead of their expected status — fixed by clearing `ThrottlerStorageService` in `beforeEach`, matching the auth spec's own pattern.
+  - The `ready`-video fixtures for these endpoint-contract tests are set up by uploading directly via `StorageService.putObject` + a direct DB `update` to `status: ready` — bypassing the real worker on purpose, since the worker pipeline is already exercised end-to-end by `video.processor.integration-spec.ts`; coupling these tests to worker timing would add flakiness for no additional coverage.
+  - Confirmed (again, now via `nestjs-api`'s full `AppModule` boot + real HTTP): `GET` with `Range: bytes=0-2` against the playback URL returns 206 with the exact byte slice, end to end through the actual API response, not just the storage layer.
+  - `nestjs-api`'s image has no `ffmpeg` (by design, TD-05) — running the full suite now requires the `video-worker` image. Documented as a throwaway-container pattern (`docker compose run --rm --entrypoint sh`) to avoid a second BullMQ consumer racing the real `video-worker` service; will fold into the `CLAUDE.md` update at phase close.
 
 ### SI-03.10 — Full-Flow E2E Test
 - **Status:** pending

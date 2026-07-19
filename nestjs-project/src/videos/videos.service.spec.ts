@@ -27,6 +27,7 @@ describe('VideosService', () => {
     createMultipartUpload: jest.Mock;
     presignUploadPart: jest.Mock;
     abortMultipartUpload: jest.Mock;
+    presignGetObject: jest.Mock;
   };
 
   const channel = { id: 'channel-1' } as Channel;
@@ -54,6 +55,7 @@ describe('VideosService', () => {
             presignUploadPart: jest.fn(),
             abortMultipartUpload: jest.fn(),
             completeMultipartUpload: jest.fn(),
+            presignGetObject: jest.fn(),
           },
         },
         {
@@ -207,6 +209,38 @@ describe('VideosService', () => {
         2,
       );
       expect(url).toBe('https://presigned');
+    });
+  });
+
+  describe('getPlaybackUrl', () => {
+    it('rejects when status is not ready', async () => {
+      videoRepository.findOne.mockResolvedValue({
+        id: 'video-1',
+        channel_id: 'channel-1',
+        status: VideoStatus.PROCESSING,
+        storage_key: 'videos/video-1/original.mp4',
+      } as Video);
+
+      await expect(
+        videosService.getPlaybackUrl('video-1', 'user-1'),
+      ).rejects.toThrow(InvalidUploadStateException);
+    });
+
+    it('delegates to StorageService.presignGetObject when ready', async () => {
+      videoRepository.findOne.mockResolvedValue({
+        id: 'video-1',
+        channel_id: 'channel-1',
+        status: VideoStatus.READY,
+        storage_key: 'videos/video-1/original.mp4',
+      } as Video);
+      storageService.presignGetObject.mockResolvedValue('https://playback-url');
+
+      const url = await videosService.getPlaybackUrl('video-1', 'user-1');
+
+      expect(storageService.presignGetObject).toHaveBeenCalledWith(
+        'videos/video-1/original.mp4',
+      );
+      expect(url).toBe('https://playback-url');
     });
   });
 

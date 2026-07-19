@@ -3,12 +3,15 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { DataSource } from 'typeorm';
+import { ThrottlerStorage, ThrottlerStorageService } from '@nestjs/throttler';
 import { AppModule } from '../src/app.module';
 import { AuthService } from '../src/auth/auth.service';
 import { DomainExceptionFilter } from '../src/common/filters/domain-exception.filter';
 import { ValidationExceptionFilter } from '../src/common/filters/validation-exception.filter';
 import { cleanAllTables } from '../src/test/create-test-data-source';
 import { MailService } from '../src/mail/mail.service';
+import { StorageService } from '../src/storage/storage.service';
+import { Video, VideoStatus } from '../src/videos/entities/video.entity';
 
 interface ErrorResponseBody {
   error: string;
@@ -19,6 +22,10 @@ interface VideoResponseBody {
   status: string;
 }
 
+interface PlaybackUrlResponseBody {
+  url: string;
+}
+
 interface UploadSessionResponseBody {
   uploadId: string;
 }
@@ -26,6 +33,8 @@ interface UploadSessionResponseBody {
 describe('Videos (e2e)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
+  let storageService: StorageService;
+  let throttlerStorage: ThrottlerStorageService;
 
   beforeAll(async () => {
     const moduleFixture = await Test.createTestingModule({
@@ -47,6 +56,9 @@ describe('Videos (e2e)', () => {
     await app.init();
 
     dataSource = moduleFixture.get(DataSource);
+    storageService = moduleFixture.get(StorageService);
+    throttlerStorage =
+      moduleFixture.get<ThrottlerStorageService>(ThrottlerStorage);
   });
 
   afterAll(async () => {
@@ -55,6 +67,7 @@ describe('Videos (e2e)', () => {
 
   beforeEach(async () => {
     await cleanAllTables(dataSource);
+    throttlerStorage.storage.clear();
   });
 
   let userCounter = 0;
@@ -254,6 +267,98 @@ describe('Videos (e2e)', () => {
         .set('Authorization', `Bearer ${token}`)
         .send({ sizeBytes: 2000, contentType: 'video/mp4' })
         .expect(201);
+    });
+  });
+
+  // Marks a video `ready` with a real object in storage — bypasses the
+  // worker (already exercised end-to-end by video.processor.integration-spec.ts)
+  // so these endpoint-contract tests aren't coupled to worker timing.
+  async function createReadyVideo(
+    token: string,
+    content: Buffer,
+  ): Promise<string> {
+    const createRes = await request(app.getHttpServer())
+      .post('/videos')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Ready video' });
+    const videoId = (createRes.body as VideoResponseBody).id;
+    const storageKey = `videos/${videoId}/original.mp4`;
+    await storageService.putObject(storageKey, content, 'video/mp4');
+    await dataSource
+      .getRepository(Video)
+      .update(videoId, { status: VideoStatus.READY, storage_key: storageKey });
+    return videoId;
+  }
+
+  describe('GET /videos/:id', () => {
+    it('returns 200 with full metadata for a ready video', async () => {
+      const token = await registerConfirmAndLogin();
+      const videoId = await createReadyVideo(token, Buffer.from('content'));
+
+      const res = await request(app.getHttpServer())
+        .get(`/videos/${videoId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect((res.body as VideoResponseBody).status).toBe('ready');
+    });
+
+    it('returns 404 for a video owned by a different user', async () => {
+      const ownerToken = await registerConfirmAndLogin();
+      const otherToken = await registerConfirmAndLogin();
+      const videoId = await createReadyVideo(
+        ownerToken,
+        Buffer.from('content'),
+      );
+
+      await request(app.getHttpServer())
+        .get(`/videos/${videoId}`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .expect(404);
+    });
+  });
+
+  describe('GET /videos/:id/playback-url', () => {
+    it('returns 409 for a video that is not ready yet', async () => {
+      const token = await registerConfirmAndLogin();
+      const createRes = await request(app.getHttpServer())
+        .post('/videos')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ title: 'Not ready' });
+      const videoId = (createRes.body as VideoResponseBody).id;
+
+      const res = await request(app.getHttpServer())
+        .get(`/videos/${videoId}/playback-url`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(409);
+
+      expect((res.body as ErrorResponseBody).error).toBe(
+        'INVALID_UPLOAD_STATE',
+      );
+    });
+
+    it('returns a URL that supports full download and Range streaming (206)', async () => {
+      const token = await registerConfirmAndLogin();
+      const content = Buffer.from('0123456789');
+      const videoId = await createReadyVideo(token, content);
+
+      const res = await request(app.getHttpServer())
+        .get(`/videos/${videoId}/playback-url`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const url = (res.body as PlaybackUrlResponseBody).url;
+
+      const fullResponse = await fetch(url);
+      expect(fullResponse.status).toBe(200);
+      const full = Buffer.from(await fullResponse.arrayBuffer());
+      expect(full.equals(content)).toBe(true);
+
+      const rangeResponse = await fetch(url, {
+        headers: { Range: 'bytes=0-2' },
+      });
+      expect(rangeResponse.status).toBe(206);
+      const partial = Buffer.from(await rangeResponse.arrayBuffer());
+      expect(partial.toString()).toBe('012');
     });
   });
 });
