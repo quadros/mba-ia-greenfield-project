@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
-**Status:** in_progress
-**SIs:** 9/10 completed
+**Status:** completed
+**SIs:** 10/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose Infrastructure
 - **Status:** completed
@@ -81,6 +81,20 @@
   - `nestjs-api`'s image has no `ffmpeg` (by design, TD-05) — running the full suite now requires the `video-worker` image. Documented as a throwaway-container pattern (`docker compose run --rm --entrypoint sh`) to avoid a second BullMQ consumer racing the real `video-worker` service; will fold into the `CLAUDE.md` update at phase close.
 
 ### SI-03.10 — Full-Flow E2E Test
-- **Status:** pending
-- **Tests:** no tests
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 2 passing (videos-full-flow.e2e-spec.ts) — real everything: real multipart upload, real FFmpeg worker (booted as a second `NestApplicationContext` alongside the API in the same test process), real MinIO, real streaming/download
+- **Observations:**
+  - Passed on the first run with zero fixes needed — a good sign the individual SIs' contracts (especially TD-02/03/06/07's key-naming and status-lifecycle conventions) were consistent going in.
+  - Confirms the whole chain end-to-end in one test: draft → multipart upload (1 part, since the ~17KB fixture fits under the 100MB part size) → complete → real worker picks it up and processes it with real FFmpeg → status reaches `ready` with correct `durationSeconds`/`thumbnailKey` → playback URL serves both the exact original bytes (full download) and a correct 100-byte slice via `Range` (206).
+  - Booting the worker as `NestFactory.createApplicationContext(WorkerModule)` alongside the API's `createNestApplication()` in the same Jest process is the same pattern used by `video.processor.integration-spec.ts` (SI-03.7/08) — proven reliable across both files.
+
+## Definition of Done — Phase 03
+
+- [x] Full test suite green: 179 unit/integration tests (30 suites) + 67 e2e tests (5 suites) — run from the `video-worker` image (has FFmpeg; `nestjs-api` deliberately does not, per TD-05)
+- [x] `npx tsc --noEmit` exits 0
+- [x] `npm run lint` exits 0 with zero errors/warnings
+- [x] MinIO, Redis, and `video-worker` all run via `docker compose up -d` alongside the existing `db`/`mailpit`/`nestjs-api`
+- [x] `videos` table migration applies and reverts cleanly (`CreateVideos1784491179100`)
+- [x] Upload up to 10GB via S3/MinIO multipart + presigned URLs, no bytes through the API process
+- [x] Automatic processing (metadata + thumbnail) and status lifecycle (`draft → processing → ready|failed`) persisted on the `videos` table
+- [x] Unique per-video storage key + on-demand presigned playback URL; streaming (206) and download both verified through the real HTTP API
