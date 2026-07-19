@@ -1,4 +1,5 @@
-import { BadRequestException, ArgumentsHost } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
+import type { ArgumentsHost } from '@nestjs/common';
 import { ValidationExceptionFilter } from './validation-exception.filter';
 
 describe('ValidationExceptionFilter', () => {
@@ -19,8 +20,10 @@ describe('ValidationExceptionFilter', () => {
       }),
       getArgs: () => [],
       getArgByIndex: () => null,
-      switchToRpc: () => ({}) as any,
-      switchToWs: () => ({}) as any,
+      switchToRpc: () =>
+        ({}) as unknown as ReturnType<ArgumentsHost['switchToRpc']>,
+      switchToWs: () =>
+        ({}) as unknown as ReturnType<ArgumentsHost['switchToWs']>,
       getType: () => 'http',
     } as unknown as ArgumentsHost;
   });

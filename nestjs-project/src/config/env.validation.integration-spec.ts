@@ -1,4 +1,14 @@
+import type { ValidationError } from 'joi';
 import { envValidationSchema } from './env.validation';
+
+interface ValidatedEnv {
+  SWAGGER_ENABLED: string;
+}
+
+interface ValidateResult {
+  value: ValidatedEnv;
+  error?: ValidationError;
+}
 
 const requiredEnv = {
   DB_USERNAME: 'user',
@@ -6,13 +16,16 @@ const requiredEnv = {
   DB_NAME: 'db',
   JWT_SECRET: 'secret',
   JWT_REFRESH_SECRET: 'refresh-secret',
+  STORAGE_ENDPOINT: 'http://minio:9000',
+  STORAGE_ACCESS_KEY: 'access-key',
+  STORAGE_SECRET_KEY: 'secret-key',
 };
 
-const validate = (env: Record<string, string>) =>
+const validate = (env: Record<string, string>): ValidateResult =>
   envValidationSchema.validate(
     { ...requiredEnv, ...env },
     { allowUnknown: true, abortEarly: false },
-  );
+  ) as ValidateResult;
 
 describe('envValidationSchema — SWAGGER_ENABLED', () => {
   it('should reject SWAGGER_ENABLED with an invalid value', () => {
